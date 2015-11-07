@@ -4,7 +4,8 @@ SPACE	:= $(EMPTY) $(EMPTY)
 SLASH	:= /
 
 V       := @
-
+#need llvm/cang-3.5+
+#USELLVM := 1
 # try to infer the correct GCCPREFX
 ifndef GCCPREFIX
 GCCPREFIX := $(shell if i386-ucore-elf-objdump -i 2>&1 | grep '^elf32-i386$$' >/dev/null 2>&1; \
@@ -23,10 +24,12 @@ endif
 
 # try to infer the correct QEMU
 ifndef QEMU
-QEMU := $(shell if which qemu > /dev/null; \
+QEMU := $(shell if which qemu-system-i386 > /dev/null; \
+	then echo 'qemu-system-i386'; exit; \
+	elif which i386-elf-qemu > /dev/null; \
+	then echo 'i386-elf-qemu'; exit; \
+	elif which qemu > /dev/null; \
 	then echo 'qemu'; exit; \
-	elif which i386-ucore-elf-qemu > /dev/null; \
-	then echo 'i386-ucore-elf-qemu'; exit; \
 	else \
 	echo "***" 1>&2; \
 	echo "*** Error: Couldn't find a working QEMU executable." 1>&2; \
@@ -41,15 +44,21 @@ endif
 .DELETE_ON_ERROR:
 
 # define compiler and flags
-
+ifndef  USELLVM
 HOSTCC		:= gcc
-HOSTCFLAGS	:= -g -Wall -O2 -D_FILE_OFFSET_BITS=64
-
-GDB		:= $(GCCPREFIX)gdb
-
-CC		?= $(GCCPREFIX)gcc
+HOSTCFLAGS	:= -g -Wall -O2
+CC		:= $(GCCPREFIX)gcc
 CFLAGS	:= -fno-builtin -Wall -ggdb -m32 -gstabs -nostdinc $(DEFS)
 CFLAGS	+= $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
+else
+HOSTCC		:= clang
+HOSTCFLAGS	:= -g -Wall -O2
+CC		:= clang
+CFLAGS	:= -fno-builtin -Wall -g -m32 -mno-sse -nostdinc $(DEFS)
+CFLAGS	+= $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
+endif
+
+GDB		:= $(GCCPREFIX)gdb
 CTYPE	:= c S
 
 LD      := $(GCCPREFIX)ld
@@ -264,6 +273,9 @@ $(foreach p,$(USER_BINS),$(eval $(call fscopy,$(p),$(SFSROOT)$(SLASH))))
 $(SFSROOT):
 	if [ ! -d "$(SFSROOT)" ]; then mkdir $(SFSROOT); fi
 
+$(SFSROOT):
+	$(V)$(MKDIR) $@
+
 $(SFSIMG): $(SFSROOT) $(SFSBINS) | $(call totarget,mksfs)
 	$(V)dd if=/dev/zero of=$@ bs=1M count=128
 	@$(call totarget,mksfs) $@ $(SFSROOT)
@@ -299,14 +311,16 @@ TARGETS: $(TARGETS)
 QEMUOPTS = -hda $(UCOREIMG) -drive file=$(SWAPIMG),media=disk,cache=writeback -drive file=$(SFSIMG),media=disk,cache=writeback 
 
 .PHONY: qemu qemu-nox debug debug-nox monitor
+qemu-mon: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
+	$(V)$(QEMU)  -no-reboot -monitor stdio $(QEMUOPTS) -serial null
 qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
-	$(V)$(QEMU) -parallel stdio $(QEMUOPTS) -serial null
+	$(V)$(QEMU)  -no-reboot -parallel stdio $(QEMUOPTS) -serial null
 
 qemu-nox: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
-	$(V)$(QEMU) -serial mon:stdio $(QEMUOPTS) -nographic
+	$(V)$(QEMU)  -no-reboot -serial mon:stdio $(QEMUOPTS) -nographic
 
 monitor: $(UCOREIMG) $(SWAPING) $(SFSIMG)
-	$(V)$(QEMU) -monitor stdio $(QEMUOPTS) -serial null
+	$(V)$(QEMU)  -no-reboot  -monitor stdio $(QEMUOPTS) -serial null
 
 TERMINAL := gnome-terminal
 
@@ -328,6 +342,9 @@ run-%: build-%
 
 sh-%: script-%
 	$(V)$(QEMU) -parallel stdio $(QEMUOPTS) -serial null
+
+run-nox-%: build-%
+	$(V)$(QEMU) -serial mon:stdio $(QEMUOPTS) -nographic
 
 build-%: touch
 	$(V)$(MAKE) $(MAKEOPTS) "DEFS+=-DTEST=$*" 
@@ -358,7 +375,7 @@ print-%:
 .PHONY: clean dist-clean handin packall tags
 clean:
 	$(V)$(RM) $(GRADE_GDB_IN) $(GRADE_QEMU_OUT)  $(SFSBINS) cscope* tags
-	-$(RM) -r $(OBJDIR) $(BINDIR)
+	$(V)$(RM) -r $(OBJDIR) $(BINDIR) $(SFSROOT)
 
 dist-clean: clean
 	-$(RM) $(HANDIN)
